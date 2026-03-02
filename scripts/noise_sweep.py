@@ -17,8 +17,8 @@ from pathlib import Path
 import torch
 
 from protmetrics import compute_structural_metrics
-from protmetrics.dihedrals import compute_dihedrals
-from protmetrics.ramachandran import ramachandran_metrics
+from protmetrics.backbone.dihedrals import compute_dihedrals
+from protmetrics.backbone.ramachandran import ramachandran_metrics
 
 # Standard alphabetical AA ordering (0-indexed)
 _AA3_TO_IDX = {

@@ -28,8 +28,8 @@ from mmtbx.validation import ramalyze
 # protmetrics imports
 # ---------------------------------------------------------------------------
 from protmetrics import compute_structural_metrics
-from protmetrics.dihedrals import compute_dihedrals
-from protmetrics.ramachandran import ramachandran_metrics
+from protmetrics.backbone.dihedrals import compute_dihedrals
+from protmetrics.backbone.ramachandran import ramachandran_metrics
 
 # Standard alphabetical AA ordering (0-indexed, matches RF2AA / OpenFold)
 _AA3_TO_IDX = {
@@ -85,10 +85,18 @@ def extract_backbone(pdb_path: str) -> tuple[torch.Tensor, torch.Tensor, list[st
     return coords, aa_seq, resnames, len(resnames)
 
 
+def _first_model_hierarchy(hierarchy):
+    """Truncate a PDB hierarchy to its first model (fixes NMR multi-model files)."""
+    if len(hierarchy.models()) > 1:
+        sel = hierarchy.atom_selection_cache().selection(f"model_id {hierarchy.models()[0].id}")
+        hierarchy = hierarchy.select(sel)
+    return hierarchy
+
+
 def run_cctbx_ramalyze(pdb_path: str) -> dict:
     """Run CCTBX ramalyze and return summary stats."""
     pdb_inp = iotbx_pdb.input(file_name=pdb_path)
-    hierarchy = pdb_inp.construct_hierarchy()
+    hierarchy = _first_model_hierarchy(pdb_inp.construct_hierarchy())
 
     rama = ramalyze.ramalyze(pdb_hierarchy=hierarchy, outliers_only=False)
 

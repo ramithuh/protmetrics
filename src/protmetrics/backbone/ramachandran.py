@@ -19,7 +19,7 @@ from pathlib import Path
 import torch
 from torch import Tensor
 
-from protmetrics.constants import AA_GLY, AA_ILE, AA_PRO, AA_VAL, RAMA_THRESHOLDS
+from protmetrics.backbone.constants import AA_GLY, AA_ILE, AA_PRO, AA_VAL, RAMA_THRESHOLDS
 
 # Lazy-loaded tables
 _RAMA_TABLES: dict[str, Tensor] | None = None
@@ -52,6 +52,48 @@ def _angle_to_bin(angle: Tensor) -> Tensor:
     (from cctbx_project/mmtbx/validation/ramachandran/convert_from_text.py)
     """
     return ((angle + 179.0) / 2.0).long().clamp(0, 179)
+
+
+def _angle_to_fractional_bin(angle: Tensor) -> Tensor:
+    """Convert angle in degrees to fractional bin index for bilinear interpolation.
+
+    Returns continuous values in [0, 180) with periodic wrapping via % 180.
+    """
+    return ((angle + 179.0) / 2.0) % 180.0
+
+
+def _bilinear_lookup(table: Tensor, phi_frac: Tensor, psi_frac: Tensor) -> Tensor:
+    """Bilinear interpolation into a [180, 180] rama table with periodic wrapping.
+
+    Args:
+        table: [180, 180] probability grid.
+        phi_frac: [...] fractional bin indices for phi.
+        psi_frac: [...] fractional bin indices for psi.
+
+    Returns:
+        [...] interpolated probability values.
+    """
+    phi_floor = phi_frac.long() % 180
+    psi_floor = psi_frac.long() % 180
+    phi_ceil = (phi_floor + 1) % 180
+    psi_ceil = (psi_floor + 1) % 180
+
+    phi_w = phi_frac - phi_frac.floor()  # weight for ceil
+    psi_w = psi_frac - psi_frac.floor()
+
+    # Four corners
+    v00 = table[phi_floor, psi_floor]
+    v01 = table[phi_floor, psi_ceil]
+    v10 = table[phi_ceil, psi_floor]
+    v11 = table[phi_ceil, psi_ceil]
+
+    # Bilinear blend
+    return (
+        v00 * (1 - phi_w) * (1 - psi_w)
+        + v01 * (1 - phi_w) * psi_w
+        + v10 * phi_w * (1 - psi_w)
+        + v11 * phi_w * psi_w
+    )
 
 
 def _classify_residues(
@@ -142,8 +184,8 @@ def ramachandran_metrics(
 
     tables = _load_tables(phi.device)
 
-    phi_bins = _angle_to_bin(phi)  # [B, L], compute for all (we index valid later)
-    psi_bins = _angle_to_bin(psi)
+    phi_frac = _angle_to_fractional_bin(phi)  # [B, L]
+    psi_frac = _angle_to_fractional_bin(psi)
 
     # Determine per-residue table assignment
     if aa_seq is not None:
@@ -151,7 +193,7 @@ def ramachandran_metrics(
     else:
         table_idx = torch.zeros_like(phi, dtype=torch.long)  # all general
 
-    # Look up probability and thresholds per residue
+    # Look up probability and thresholds per residue (bilinear interpolation)
     probs = torch.zeros_like(phi)
     fav_thresh = torch.zeros_like(phi)
     allowed_thresh = torch.zeros_like(phi)
@@ -160,7 +202,7 @@ def ramachandran_metrics(
         mask = (table_idx == i) & valid
         if mask.any():
             table = tables[name].to(phi.device)
-            probs[mask] = table[phi_bins[mask], psi_bins[mask]]
+            probs[mask] = _bilinear_lookup(table, phi_frac[mask], psi_frac[mask])
             fav_t, allowed_t = RAMA_THRESHOLDS[name]
             fav_thresh[mask] = fav_t
             allowed_thresh[mask] = allowed_t

@@ -3,11 +3,14 @@
 import torch
 from torch import Tensor
 
-from protmetrics.constants import (
+from protmetrics.backbone.constants import (
     BOND_ANGLE_VIOLATION_THRESHOLD,
     IDEAL_CA_C_N,
     IDEAL_C_N_CA,
     IDEAL_N_CA_C,
+    STDDEV_CA_C_N,
+    STDDEV_C_N_CA,
+    STDDEV_N_CA_C,
 )
 
 
@@ -65,7 +68,7 @@ def bond_angle_metrics(
             return {f"angle/{name}_mean": nan, f"angle/{name}_std": nan}
         return {
             f"angle/{name}_mean": valid.mean(),
-            f"angle/{name}_std": valid.std(),
+            f"angle/{name}_std": valid.std(correction=min(1, valid.numel() - 1)),
             f"angle/{name}_dev_mean": (valid - ideal).abs().mean(),
         }
 
@@ -86,5 +89,19 @@ def bond_angle_metrics(
         ).float().mean()
     else:
         metrics["angle/violation_frac"] = torch.tensor(float("nan"), device=coords.device)
+
+    # Z-scores and RMSZ
+    z_n_ca_c = (ang_n_ca_c[intra_mask] - IDEAL_N_CA_C) / STDDEV_N_CA_C
+    z_ca_c_n = (ang_ca_c_n[inter_mask] - IDEAL_CA_C_N) / STDDEV_CA_C_N
+    z_c_n_ca = (ang_c_n_ca[inter_mask] - IDEAL_C_N_CA) / STDDEV_C_N_CA
+
+    all_z = torch.cat([z_n_ca_c, z_ca_c_n, z_c_n_ca])
+    if all_z.numel() > 0:
+        metrics["angle/rmsz"] = (all_z ** 2).mean().sqrt()
+        metrics["angle/outlier_frac_4sigma"] = (all_z.abs() > 4.0).float().mean()
+    else:
+        nan = torch.tensor(float("nan"), device=coords.device)
+        metrics["angle/rmsz"] = nan
+        metrics["angle/outlier_frac_4sigma"] = nan
 
     return metrics

@@ -3,8 +3,8 @@
 import math
 
 import torch
-from protmetrics.angles import bond_angle_metrics
-from protmetrics.constants import IDEAL_N_CA_C
+from protmetrics.backbone.angles import bond_angle_metrics
+from protmetrics.backbone.constants import IDEAL_N_CA_C
 
 
 def test_ideal_geometry_angles(ideal_coords):
@@ -63,3 +63,47 @@ def test_violation_counting():
     m = bond_angle_metrics(coords)
     # 180° deviates from all ideals (111°, 116.6°, 121.4°) by >> 10°
     assert m["angle/violation_frac"].item() > 0.9
+
+
+def test_rmsz_ideal_geometry():
+    """Single residue with exact ideal N-CA-C angle → RMSZ ≈ 0."""
+    angle_rad = math.radians(IDEAL_N_CA_C)
+    coords = torch.zeros(1, 3, 3)
+    coords[0, 0] = torch.tensor([1.0, 0.0, 0.0])  # N
+    coords[0, 1] = torch.tensor([0.0, 0.0, 0.0])  # CA (vertex)
+    # C at ideal angle from N-CA direction
+    coords[0, 2] = torch.tensor([math.cos(angle_rad), math.sin(angle_rad), 0.0])
+    m = bond_angle_metrics(coords)
+    # Only intra-residue angle, should be exactly ideal → RMSZ ≈ 0
+    assert m["angle/rmsz"].item() < 0.1
+    assert m["angle/outlier_frac_4sigma"].item() == 0.0
+
+
+def test_angle_4sigma_outlier_detection():
+    """Collinear atoms (180°) should produce 4-sigma outliers.
+
+    N-CA-C ideal=111°, stddev=2.8° → Z = (180-111)/2.8 ≈ 24.6 → outlier.
+    """
+    coords = torch.zeros(1, 6, 3)
+    coords[0, 0] = torch.tensor([0.0, 0.0, 0.0])
+    coords[0, 1] = torch.tensor([1.0, 0.0, 0.0])
+    coords[0, 2] = torch.tensor([2.0, 0.0, 0.0])
+    coords[0, 3] = torch.tensor([3.0, 0.0, 0.0])
+    coords[0, 4] = torch.tensor([4.0, 0.0, 0.0])
+    coords[0, 5] = torch.tensor([5.0, 0.0, 0.0])
+
+    m = bond_angle_metrics(coords)
+    assert m["angle/outlier_frac_4sigma"].item() > 0.9
+
+
+def test_backward_compat_keys(ideal_coords):
+    """All original metric keys must still be present."""
+    m = bond_angle_metrics(ideal_coords)
+    for key in [
+        "angle/N_CA_C_mean", "angle/N_CA_C_std", "angle/N_CA_C_dev_mean",
+        "angle/CA_C_N_mean", "angle/CA_C_N_std", "angle/CA_C_N_dev_mean",
+        "angle/C_N_CA_mean", "angle/C_N_CA_std", "angle/C_N_CA_dev_mean",
+        "angle/violation_frac",
+        "angle/rmsz", "angle/outlier_frac_4sigma",
+    ]:
+        assert key in m, f"Missing key: {key}"

@@ -21,8 +21,8 @@ from iotbx import pdb as iotbx_pdb
 from mmtbx.validation import ramalyze
 
 from protmetrics import compute_structural_metrics
-from protmetrics.dihedrals import compute_dihedrals
-from protmetrics.ramachandran import ramachandran_metrics
+from protmetrics.backbone.dihedrals import compute_dihedrals
+from protmetrics.backbone.ramachandran import ramachandran_metrics
 
 _AA3_TO_IDX = {
     "ALA": 0, "ARG": 1, "ASN": 2, "ASP": 3, "CYS": 4,
@@ -39,10 +39,18 @@ def download_pdb(pdb_id: str) -> str:
     return str(tmp)
 
 
+def _first_model_hierarchy(hierarchy):
+    """Truncate a PDB hierarchy to its first model (fixes NMR multi-model files)."""
+    if len(hierarchy.models()) > 1:
+        sel = hierarchy.atom_selection_cache().selection(f"model_id {hierarchy.models()[0].id}")
+        hierarchy = hierarchy.select(sel)
+    return hierarchy
+
+
 def extract_backbone(pdb_path: str):
     """Extract backbone coords, aa_seq, and the raw hierarchy for rewriting."""
     pdb_inp = iotbx_pdb.input(file_name=pdb_path)
-    hierarchy = pdb_inp.construct_hierarchy()
+    hierarchy = _first_model_hierarchy(pdb_inp.construct_hierarchy())
 
     model = hierarchy.models()[0]
     chain = model.chains()[0]

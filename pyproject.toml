@@ -16,4 +16,4 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-protmetrics = ["rama_data/*.pt"]
+"protmetrics.backbone" = ["rama_data/*.pt"]

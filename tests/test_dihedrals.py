@@ -3,7 +3,7 @@
 import math
 
 import torch
-from protmetrics.dihedrals import _dihedral, compute_dihedrals
+from protmetrics.backbone.dihedrals import _dihedral, compute_dihedrals
 
 
 class TestDihedralPrimitive:

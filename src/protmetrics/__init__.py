@@ -1,9 +1,33 @@
-"""protmetrics — Pure PyTorch structural validation metrics for protein backbones."""
+"""protmetrics — Pure PyTorch structural validation metrics for protein backbones.
 
-from protmetrics.angles import bond_angle_metrics
-from protmetrics.bonds import bond_length_metrics
-from protmetrics.dihedrals import compute_dihedrals
-from protmetrics.ramachandran import ramachandran_metrics
+Usage with PyTorch Lightning + W&B:
+
+    import protmetrics
+
+    class MyModel(L.LightningModule):
+        def validation_step(self, batch, batch_idx):
+            coords = self.predict(batch)       # [B, L*3, 3]
+            mask = batch["mask"]               # [B, L]
+            aa_seq = batch["aa_seq"]           # [B, L]
+
+            metrics = protmetrics.compute_structural_metrics(
+                coords, backbone_mask=mask, aa_seq=aa_seq
+            )
+            self.log_dict(metrics, prog_bar=False)
+            # Logged keys include:
+            #   bond/rmsz, bond/outlier_frac_4sigma, bond/violation_frac,
+            #   angle/rmsz, angle/outlier_frac_4sigma, angle/violation_frac,
+            #   rama/favored_frac, rama/allowed_frac, rama/outlier_frac,
+            #   bond/N_CA_mean, bond/CA_C_mean, bond/C_N_mean, ...
+"""
+
+from protmetrics.backbone import (
+    bond_angle_metrics,
+    bond_length_metrics,
+    compute_dihedrals,
+    compute_structural_metrics,
+    ramachandran_metrics,
+)
 
 __all__ = [
     "bond_length_metrics",
@@ -12,25 +36,3 @@ __all__ = [
     "ramachandran_metrics",
     "compute_structural_metrics",
 ]
-
-
-def compute_structural_metrics(
-    backbone_coords,
-    backbone_mask=None,
-    aa_seq=None,
-    aa_index_offset=0,
-):
-    """All-in-one structural metrics. Returns flat dict for self.log_dict().
-
-    Args:
-        backbone_coords: [B, L*3, 3] with repeating N, CA, C order.
-        backbone_mask: [B, L] residue-level mask (1 = valid, 0 = padding).
-        aa_seq: [B, L] integer amino acid indices for rama table dispatch.
-        aa_index_offset: Offset for aa_seq (use 1 if 1-indexed/padding at 0).
-    """
-    metrics = {}
-    metrics.update(bond_length_metrics(backbone_coords, backbone_mask))
-    metrics.update(bond_angle_metrics(backbone_coords, backbone_mask))
-    phi, psi, omega = compute_dihedrals(backbone_coords, backbone_mask)
-    metrics.update(ramachandran_metrics(phi, psi, aa_seq, omega, aa_index_offset))
-    return metrics
