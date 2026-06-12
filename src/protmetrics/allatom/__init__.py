@@ -15,12 +15,19 @@ rotamer favorability (or clash) as a training loss — optimizing toward favored
 rotamers Goodharts into native-looking but wrong placements. Differentiability is
 preserved as a property, not an invitation.
 
-Status: cbeta + chi + rotamer outlier + recovery are implemented and verified
-exact vs CCTBX; clash/geometry remain stubs (heavy-atom bond-topology table).
+Status: cbeta + chi + rotamer outlier + recovery + sidechain covalent geometry
+(bond/angle RMSZ, chirality, planarity) are implemented and verified vs CCTBX;
+clash remains a stub (heavy-atom bond-topology table).
 """
 
 from protmetrics.allatom.cbeta import cbeta_deviation_metrics, ideal_cb
 from protmetrics.allatom.dihedrals import compute_chi
+from protmetrics.allatom.geometry import sidechain_geometry_metrics
+from protmetrics.allatom.losses import (
+    sidechain_angle_loss,
+    sidechain_bond_loss,
+    sidechain_geometry_loss,
+)
 from protmetrics.allatom.recovery import chi_rmsd_metrics, rotamer_recovery
 from protmetrics.allatom.rotamers import rotamer_metrics
 
@@ -29,6 +36,10 @@ __all__ = [
     "ideal_cb",
     "compute_chi",
     "rotamer_metrics",
+    "sidechain_geometry_metrics",
+    "sidechain_bond_loss",
+    "sidechain_angle_loss",
+    "sidechain_geometry_loss",
     "chi_rmsd_metrics",
     "rotamer_recovery",
     "evaluate_sidechains",
@@ -42,6 +53,7 @@ def evaluate_sidechains(
     has_sidechain=None,
     native_atom14_coords=None,
     native_atom14_mask=None,
+    per_restype=False,
 ):
     """All-in-one pocket sidechain metrics. Returns a flat dict for log_dict().
 
@@ -49,6 +61,9 @@ def evaluate_sidechains(
     `native_atom14_coords` is provided (conditioned/memorization eval), recovery
     metrics (chi-RMSD, rotamer recovery) are added; otherwise they are skipped
     (unconditioned de novo).
+
+    `per_restype=True` adds per-residue-type covalent-geometry keys
+    (sidechain/<RES>/bond_rmsz, .../angle_rmsz) — a per-sidechain learnability map.
     """
     metrics = {}
     n, ca, c = atom14_coords[..., 0, :], atom14_coords[..., 1, :], atom14_coords[..., 2, :]
@@ -61,6 +76,12 @@ def evaluate_sidechains(
 
     chi, chi_valid = compute_chi(atom14_coords, aa_seq, atom14_mask, has_sidechain)
     metrics.update(rotamer_metrics(chi, chi_valid, aa_seq))
+
+    if atom14_mask is not None:
+        metrics.update(sidechain_geometry_metrics(
+            atom14_coords, atom14_mask, aa_seq,
+            residue_mask=has_sidechain, per_restype=per_restype,
+        ))
 
     if native_atom14_coords is not None:
         nchi, nvalid = compute_chi(native_atom14_coords, aa_seq, native_atom14_mask, has_sidechain)
