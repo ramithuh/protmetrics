@@ -17,4 +17,4 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "protmetrics.backbone" = ["rama_data/*.pt"]
-"protmetrics.allatom" = ["rota_data/*.pt"]
+"protmetrics.allatom" = ["rota_data/*.pt", "geom_data/*.pt"]
