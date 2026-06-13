@@ -68,3 +68,21 @@ AA_GLY = 7
 AA_PRO = 14
 AA_ILE = 9
 AA_VAL = 19
+
+# ---------------------------------------------------------------------------
+# Van der Waals radii (Angstroms) — Bondi (1964), J. Phys. Chem. 68, 441
+# Used for backbone clash detection.
+# ---------------------------------------------------------------------------
+VDW_RADIUS_N = 1.55
+VDW_RADIUS_C = 1.70  # applies to both CA and C
+VDW_RADIUS_O = 1.52
+
+# Clash overlap threshold (Angstroms) — MolProbity convention
+# overlap = (r_A + r_B) - dist; clash if overlap >= threshold
+CLASH_OVERLAP_THRESHOLD = 0.4
+
+# ---------------------------------------------------------------------------
+# Carbonyl oxygen reconstruction geometry — Engh & Huber
+# ---------------------------------------------------------------------------
+IDEAL_C_O = 1.231          # C=O bond length (Angstroms)
+IDEAL_CA_C_O = 120.8       # CA-C=O angle (degrees)

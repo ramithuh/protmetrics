@@ -4,3 +4,8 @@ __pycache__/
 dist/
 build/
 .eggs/
+
+# scratch / non-source artifacts (not part of the package)
+cctbx_eval.csv
+reduce_fail.pdb
+papers/

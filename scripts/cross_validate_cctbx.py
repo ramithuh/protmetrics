@@ -11,6 +11,8 @@ Usage:
     python scripts/cross_validate_cctbx.py              # defaults to 1ubq
 """
 
+import shutil
+import subprocess
 import sys
 import tempfile
 import urllib.request
@@ -23,6 +25,27 @@ import torch
 # ---------------------------------------------------------------------------
 from iotbx import pdb as iotbx_pdb
 from mmtbx.validation import ramalyze
+try:
+    from mmtbx.validation.clashscore import clashscore as cctbx_clashscore_cls
+
+    # pip-installed cctbx-base creates a libtbx.env_config.environment that
+    # doesn't know about standalone probe/reduce binaries on $PATH.
+    # Monkey-patch has_module so it falls back to PATH lookup.
+    import libtbx
+    if hasattr(libtbx, "env") and libtbx.env is not None:
+        _orig_has_module = libtbx.env.has_module
+        def _patched_has_module(name):
+            result = _orig_has_module(name)
+            if not result:
+                result = shutil.which(name) is not None
+            return result
+        libtbx.env.has_module = _patched_has_module
+
+    _HAS_PROBE = True
+except ImportError:
+    _HAS_PROBE = False
+
+_HAS_REDUCE = shutil.which("phenix.reduce") is not None
 
 # ---------------------------------------------------------------------------
 # protmetrics imports
@@ -123,6 +146,115 @@ def run_cctbx_ramalyze(pdb_path: str) -> dict:
     }
 
 
+def _reduce_add_hydrogens(pdb_path: str) -> str | None:
+    """Run phenix.reduce to add hydrogens, matching MolProbity pipeline.
+
+    MolProbity first strips H (reduce -trim -allalt), then re-adds with flips
+    (reduce -build). Returns path to temp PDB with H, or None on failure.
+    """
+    if not _HAS_REDUCE:
+        return None
+    try:
+        # Step 1: strip existing H (including all alt conformations)
+        trim_result = subprocess.run(
+            ["phenix.reduce", "-quiet", "-trim", "-allalt", pdb_path],
+            capture_output=True, timeout=60,
+        )
+        trimmed = trim_result.stdout
+        if trim_result.returncode != 0 or not trimmed:
+            return None
+
+        # Strip USER MOD records (MolProbity does this; fatal to some tools)
+        trimmed = b"\n".join(
+            line for line in trimmed.split(b"\n")
+            if not line.startswith(b"USER  MOD")
+        )
+
+        # Step 2: re-add H with Asn/Gln/His flips
+        build_result = subprocess.run(
+            ["phenix.reduce", "-quiet", "-build"],
+            input=trimmed, capture_output=True, timeout=120,
+        )
+        built = build_result.stdout
+        if not built:
+            return None
+
+        tmp = tempfile.NamedTemporaryFile(suffix=".pdb", delete=False)
+        tmp.write(built)
+        tmp.close()
+        return tmp.name
+    except (subprocess.TimeoutExpired, OSError) as e:
+        print(f"  Warning: reduce failed on {pdb_path}: {e}", file=sys.stderr)
+        return None
+
+
+def _prepare_hierarchy(pdb_path: str) -> tuple:
+    """Run Reduce and build hierarchy, matching MolProbity pipeline.
+
+    Returns (hierarchy, reduced_path_or_None). Both ramalyze and clashscore
+    should operate on this hierarchy.
+    """
+    reduced_path = _reduce_add_hydrogens(pdb_path)
+    analysis_path = reduced_path if reduced_path else pdb_path
+
+    pdb_inp = iotbx_pdb.input(file_name=analysis_path)
+    hierarchy = _first_model_hierarchy(pdb_inp.construct_hierarchy())
+    return hierarchy, reduced_path
+
+
+def run_cctbx_ramalyze(hierarchy) -> dict:
+    """Run CCTBX ramalyze on a prepared hierarchy and return summary stats."""
+    rama = ramalyze.ramalyze(pdb_hierarchy=hierarchy, outliers_only=False)
+
+    per_residue = []
+    for result in rama.results:
+        per_residue.append({
+            "resname": result.resname.strip(),
+            "resseq": result.resseq.strip(),
+            "phi": result.phi,
+            "psi": result.psi,
+            "score": result.score,
+            "rama_type": result.rama_type,  # 2=FAVORED, 1=ALLOWED, 0=OUTLIER
+        })
+
+    return {
+        "n_total": rama.n_total,
+        "n_favored": rama.n_favored,
+        "n_allowed": rama.n_allowed,
+        "n_outliers": rama.n_outliers,
+        "favored_frac": rama.n_favored / rama.n_total if rama.n_total > 0 else 0,
+        "allowed_frac": rama.n_allowed / rama.n_total if rama.n_total > 0 else 0,
+        "outlier_frac": rama.n_outliers / rama.n_total if rama.n_total > 0 else 0,
+        "per_residue": per_residue,
+    }
+
+
+def run_cctbx_clashscore(hierarchy) -> dict | None:
+    """Run CCTBX/MolProbity clashscore on a prepared hierarchy.
+
+    Returns None if probe is not available.
+    """
+    if not _HAS_PROBE:
+        return None
+
+    try:
+        clash = cctbx_clashscore_cls(
+            pdb_hierarchy=hierarchy,
+            b_factor_cutoff=40,
+            keep_hydrogens=True,
+            nuclear=False,
+        )
+        return {
+            "clashscore": clash.get_clashscore(),
+            "n_clashes": len(clash.results),
+        }
+    except RuntimeError as e:
+        if "Probe" in str(e):
+            print(f"  (skipping CCTBX clashscore: {e})")
+            return None
+        raise
+
+
 def compare(pdb_id: str):
     """Compare protmetrics vs CCTBX on a single structure."""
     print(f"\n{'='*60}")
@@ -133,9 +265,25 @@ def compare(pdb_id: str):
     coords, aa_seq, resnames, n_res = extract_backbone(pdb_path)
     print(f"Extracted {n_res} residues from chain A")
 
-    # --- CCTBX ---
-    print("\nRunning CCTBX ramalyze...")
-    cctbx_results = run_cctbx_ramalyze(pdb_path)
+    # --- CCTBX (on Reduce-processed structure, matching MolProbity) ---
+    print("\nRunning Reduce (add H + flip Asn/Gln/His)...")
+    hierarchy, reduced_path = _prepare_hierarchy(pdb_path)
+    if reduced_path:
+        print("  Reduce OK — running CCTBX on H-added structure")
+    else:
+        print("  Reduce unavailable — running CCTBX on original PDB")
+
+    print("Running CCTBX ramalyze...")
+    cctbx_results = run_cctbx_ramalyze(hierarchy)
+    print("Running CCTBX clashscore (requires probe)...")
+    cctbx_clash = run_cctbx_clashscore(hierarchy)
+
+    # Clean up temp file
+    if reduced_path:
+        try:
+            Path(reduced_path).unlink()
+        except OSError:
+            pass
 
     # --- protmetrics ---
     print("Running protmetrics...")
@@ -198,13 +346,22 @@ def compare(pdb_id: str):
     if psi_diffs:
         print(f"Mean |psi diff|: {sum(psi_diffs)/len(psi_diffs):.3f}°")
 
-    # --- Bond/angle summary ---
-    print(f"\nBond/angle metrics (protmetrics):")
-    for k in sorted(pm_all.keys()):
-        if k.startswith("bond/") or k.startswith("angle/"):
-            print(f"  {k:30s} = {pm_all[k].item():.4f}")
+    # --- Clash score (CCTBX only) ---
+    print(f"\n{'Clash Score (CCTBX)':>25s}  {'value':>10s}")
+    print("-" * 40)
 
-    return cctbx_results, pm_rama, pm_all
+    if cctbx_clash is not None:
+        print(f"{'clashscore':>25s}  {cctbx_clash['clashscore']:10.2f}")
+        print(f"{'n_clashes':>25s}  {cctbx_clash['n_clashes']:10d}")
+    else:
+        print(f"{'clashscore':>25s}  {'N/A':>10s}  (probe/reduce not found)")
+
+    # --- Bond/angle summary (protmetrics) ---
+    print(f"\nProtmetrics (bonds, angles, rama):")
+    for k in sorted(pm_all.keys()):
+        print(f"  {k:30s} = {pm_all[k].item():.4f}")
+
+    return cctbx_results, cctbx_clash, pm_rama, pm_all
 
 
 def main():
