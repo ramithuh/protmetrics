@@ -25,6 +25,8 @@ dimensionless and additive; other modes mix units across families, so use per-fa
 ``weights`` then.
 """
 
+import warnings
+
 import torch
 from torch import Tensor
 
@@ -139,7 +141,9 @@ def _collect(coords, mask, aa, rmask, exact):
             ctr = (w[None, :, None] * pts).sum(1, keepdim=True) / w.sum()  # [Mp,1,3]
             diff = pts - ctr                              # [Mp, K, 3]
             cov = torch.einsum("k,mki,mkj->mij", w, diff, diff)  # [Mp,3,3] weighted covariance
-            normal = torch.linalg.eigh(cov)[1][:, :, 0]   # smallest-eigenvalue vector [Mp,3]
+            # detach the normal: keeps the forward value exact (== CCTBX), but stops
+            # gradient flowing through eigh (unstable for near-degenerate/collinear planes).
+            normal = torch.linalg.eigh(cov)[1][:, :, 0].detach()  # smallest-eigenvalue vec [Mp,3]
             dist = (diff * normal.unsqueeze(1)).sum(-1)   # [Mp, K] signed distance to plane
             dev["planarity"].append(dist.reshape(-1))
             sig["planarity"].append(esd[None, :].expand(dist.shape[0], -1).reshape(-1))
@@ -178,7 +182,7 @@ def _proline_link_terms(coords, mask, aa, rmask, dev, sig):
     # planar proline N
     pts = torch.stack([Cprev[present], N[present], CA[present], CD[present]], dim=1)  # [Mp,4,3]
     ctr = pts.mean(1, keepdim=True)
-    normal = torch.linalg.svd(pts - ctr, full_matrices=False)[2][:, -1, :]
+    normal = torch.linalg.svd(pts - ctr, full_matrices=False)[2][:, -1, :].detach()  # stable backward
     dist = ((pts - ctr) * normal.unsqueeze(1)).sum(-1)        # [Mp,4]
     dev["planarity"].append(dist.reshape(-1))
     sig["planarity"].append(torch.full_like(dist.reshape(-1), 0.05))
@@ -243,6 +247,21 @@ def sidechain_geometry_energy(
         mode="harmonic", reduction="sum", exact=True == CCTBX covalent restraint target
         for the sidechain (minus clash/dihedral).
     """
+    # Guard the two loss-vs-metric footguns:
+    if mode in ("mse", "harmonic_unweighted", "berhu") and weights is None:
+        raise ValueError(
+            f"mode={mode!r} mixes units across families (bond A^2, angle deg^2, chirality "
+            "volume^2, planarity A^2) and would be dominated by the largest-scale family. "
+            "Pass explicit per-family `weights`, or use mode='berhu_sigma' (per-restraint "
+            "sigma-knee, weight-free) or mode='harmonic' (dimensionless z^2).")
+    if mode == "harmonic" and atom14_coords.requires_grad and torch.is_grad_enabled():
+        warnings.warn(
+            "sidechain_geometry_energy(mode='harmonic') is being backpropagated. harmonic is "
+            "the CCTBX-energy *metric*; its 1/sigma^2 weighting amplifies stiff-bond gradients "
+            "(~2500x for a ~0.01 A bond sigma) and destabilises training. For a loss use "
+            "mode='berhu_sigma' (weight-free) or 'mse'/'berhu' with explicit weights.",
+            stacklevel=2)
+
     w = {f: 1.0 for f in _FAMILIES}
     if weights:
         w.update(weights)
@@ -253,10 +272,14 @@ def sidechain_geometry_energy(
     for f, (dv, sg) in fam.items():
         if dv.numel() == 0:
             comps[f] = atom14_coords.new_zeros(())
+            if return_components:
+                comps[f + "_rmsz"] = atom14_coords.new_full((), float("nan"))
             continue
         pen = _penalty(dv, sg, mode, tol, c)
         e = pen.sum() if reduction == "sum" else pen.mean()
         comps[f] = e
+        if return_components:  # per-family RMSZ, to line up with bond_rmsz / angle_rmsz logs
+            comps[f + "_rmsz"] = (dv / sg.clamp_min(1e-8)).pow(2).mean().sqrt()
         total = total + w[f] * e
 
     return (total, comps) if return_components else total

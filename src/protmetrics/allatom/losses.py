@@ -80,6 +80,7 @@ def _gather_atoms(atom14_coords: Tensor, slot: Tensor) -> Tensor:
 
 
 def _penalty(dev: Tensor, sigma: Tensor, mode: str, tol: float, c: float | None) -> Tensor:
+    sigma = sigma.clamp_min(1e-8)  # guard sigma=0 (degenerate restraint) -> no div-by-zero NaN
     z = dev / sigma  # deviation in sigma units (dimensionless)
     if mode == "flat_bottom":              # cost only beyond tol sigma; preserves natural spread
         return torch.relu(z.abs() - tol) ** 2
@@ -107,7 +108,7 @@ def _penalty(dev: Tensor, sigma: Tensor, mode: str, tol: float, c: float | None)
         # radian angle reformulation.
         if c is None:
             raise ValueError("mode='berhu_sigma' requires c (dimensionless k: knee at k*sigma)")
-        c_eff = c * sigma
+        c_eff = (c * sigma).clamp_min(1e-8)  # per-restraint knee; guard against sigma=0
         a = dev.abs()
         return torch.where(a <= c_eff, a, (dev ** 2 + c_eff ** 2) / (2.0 * c_eff))
     raise ValueError(f"unknown mode {mode!r}")
