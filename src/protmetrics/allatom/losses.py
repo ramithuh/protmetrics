@@ -95,6 +95,21 @@ def _penalty(dev: Tensor, sigma: Tensor, mode: str, tol: float, c: float | None)
             raise ValueError("mode='berhu' requires c (raw units: Angstrom for bonds, degrees for angles)")
         a = dev.abs()
         return torch.where(a <= c, a, (dev ** 2 + c ** 2) / (2.0 * c))
+    if mode == "berhu_sigma":              # ADAPTIVE reversed-Huber: knee at c*sigma per
+        # constraint (Engh-Huber physical tolerance). c is the DIMENSIONLESS multiplier k:
+        # gentle L1 within normal wiggle (|dev| <= k*sigma), quadratic on unphysical geometry
+        # beyond. Self-annealing: as the model improves past tolerance, more mass falls into
+        # the L1 core -> gentle constant-gradient polishing. sigma sets the KNEE per
+        # constraint, NOT a normalizer (penalty stays raw |dev|/dev^2 -> no chi^2 blowup like
+        # the harmonic/flat_bottom modes). NOTE: this adapts the THRESHOLD, not the coord-
+        # gradient scale -- angles in degrees still carry ~57x (deg/rad) the coord-gradient of
+        # bonds, so mixing bond+angle still needs the angle weight scaled down (~1/57) or a
+        # radian angle reformulation.
+        if c is None:
+            raise ValueError("mode='berhu_sigma' requires c (dimensionless k: knee at k*sigma)")
+        c_eff = c * sigma
+        a = dev.abs()
+        return torch.where(a <= c_eff, a, (dev ** 2 + c_eff ** 2) / (2.0 * c_eff))
     raise ValueError(f"unknown mode {mode!r}")
 
 
