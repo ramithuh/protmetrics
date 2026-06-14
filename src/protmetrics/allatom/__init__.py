@@ -22,6 +22,7 @@ clash remains a stub (heavy-atom bond-topology table).
 
 from protmetrics.allatom.cbeta import cbeta_deviation_metrics, ideal_cb
 from protmetrics.allatom.dihedrals import compute_chi
+from protmetrics.allatom.energy import sidechain_geometry_energy
 from protmetrics.allatom.geometry import sidechain_geometry_metrics
 from protmetrics.allatom.losses import (
     sidechain_angle_loss,
@@ -37,6 +38,7 @@ __all__ = [
     "compute_chi",
     "rotamer_metrics",
     "sidechain_geometry_metrics",
+    "sidechain_geometry_energy",
     "sidechain_bond_loss",
     "sidechain_angle_loss",
     "sidechain_geometry_loss",

@@ -136,6 +136,37 @@ Three functions: `sidechain_bond_loss`, `sidechain_angle_loss`,
 
 ---
 
+## 3b. Compound covalent energy (one object: val metric + loss)
+
+`sidechain_geometry_energy` is a single differentiable scalar over **all four**
+covalent families — bonds + angles + chirality + planarity (no clash). It serves
+both uses:
+
+```python
+# VAL METRIC — reproduces CCTBX's covalent restraint target (minus clash)
+with torch.no_grad():
+    E, comps = A.sidechain_geometry_energy(
+        a14, mask, aa, residue_mask=pocket,
+        mode="harmonic", reduction="sum", exact=True, return_components=True)
+    # E ≈ CCTBX target; comps = {bond, angle, chirality, planarity}
+
+# LOSS — same object, training-friendly mode, faster path
+loss_geom = A.sidechain_geometry_energy(
+    a14_hat, mask, aa, residue_mask=pocket,
+    mode="mse", reduction="mean", exact=False)
+```
+
+- `mode="harmonic", reduction="sum", exact=True` **== CCTBX restraint energy** —
+  validated to **<1% of CCTBX's target** on 1ubq/1crn/2igd/1rbp (angles & chirality
+  exact, bonds <1%, planarity weighted-correct). Uses CDL CA–CB + proline/disulfide
+  links + monomer-library chirality volumes + per-atom planarity esd (ARG CD).
+- `exact=False` drops CDL + link terms (static ideals) — for the loss path where
+  exactness is moot. ~10 ms GPU fwd+bwd (B=32) vs ~44 ms for `exact=True`.
+- `weights={...}` rescales per family; `return_components=True` gives the per-family
+  breakdown for logging.
+- Note: only `mode="harmonic"` makes the four families dimensionless (z²) and additive.
+  Other modes mix units (Å² vs deg² vs Å³…), so set `weights` if you combine them.
+
 ## 4. Discipline & gotchas
 
 - **Do NOT make a rotamer-favorability loss.** It's a Goodhart magnet (pulls χ to
